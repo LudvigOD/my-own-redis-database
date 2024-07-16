@@ -102,9 +102,99 @@ static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn){
    // converting the integer of conn->fd to size_t and if that is bigger 
    // than fd2conn.size() => we need to increase size so fd has its key (index)
   if(fd2conn.size() <= (size_t)conn->fd){
-    fd2conn.resize(conn->fd + 1);
+    fd2conn.resize(conn->fd + 1); // +1 due to index start at 0
   }
+  // set new conn to its fd key
   fd2conn[conn->fd] = conn;
+}
+
+static int32_t accept_new_conn(std::vector <Conn *> &fd2conn, int fd){
+  // accept new connection
+  struct sockaddr_in client_addr = {};
+  socklen_t socklen = sizeof(client_addr);
+  int connfd = accept(fd, (struct sockaddr *) &client_addr, &socklen);
+  if (connfd < 0){
+    msg("accept() error");
+    return -1; // error
+  }
+
+  // set new fd to nonblocking mode
+  fd_set_nb(connfd);
+  // creating the struct Conn
+  struct Conn *conn = (struct Conn *) malloc(sizeof(struct Conn));
+  if(!conn){
+    close(connfd);
+    return -1;
+  }
+
+  // configuring and adding connection to fd2conn
+  conn->fd = connfd;
+  conn->state = STATE_REQ;
+  conn->rbuf_size = 0;
+  conn->wbuf_size = 0;
+  conn->wbuf_sent = 0;
+  conn_put(fd2conn, conn);
+
+  return 0;
+}
+
+static void connection_io(Conn *conn){
+  if (conn->state == STATE_REQ){
+    state_req(conn);
+  }
+  else if (conn->state == STATE_RES){
+    state_res(conn);
+  }
+  else{
+    assert(0); // not expected
+  }
+}
+
+static void state_req(Conn *conn){
+  while(try_fill_buffer(conn)){}
+}
+
+static bool try_fill_buffer(Conn *conn){
+  // try to fill the buffer
+  assert(conn->rbuf_size < sizeof(conn->rbuf));
+  ssize_t rv = 0;
+  do {
+    size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
+    // start to read cap amounts of bytes to rbuf
+    // starting at rbuf_size
+    rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap); 
+    
+  } while (rv < 0 && errno == EINTR); // if it is interupted it reads again 
+                                      // from the latest popsition
+
+  if(rv < 0 && errno == EAGAIN){
+    // got eagain, stop
+    return false;
+  }
+  if(rv < 0){
+    msg("read() error");
+    conn->state = STATE_END;
+    return false;
+  }
+  if(rv == 0){
+    if(conn->rbuf_size > 0){
+      msg("unexpected EOF");
+    }
+    else{
+      // if rbuf_size is 0 then no bytes were read and therefore its finsished
+      msg("EOF");
+    }
+    conn->state = STATE_END;
+    return false;
+  }
+
+  conn->rbuf_size += (size_t)rv;
+  assert(conn->rbuf_size <= sizeof(conn->rbuf)); // else message to long
+  
+  // try to request one by one
+  // Why is there a loop? Read explanation of pipelining...
+  while(try_one_request(conn)){}
+  return (conn->state == STATE_REQ);
 }
 
 int main(){
