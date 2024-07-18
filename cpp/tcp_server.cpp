@@ -7,33 +7,43 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include "Conn.cpp"
 #include <vector>
 #include <poll.h>
 
 #include <assert.h>
 
-#include "global_func.cpp"
+#include "Conn.h"
+#include "global_func.h"
 
+// Set descriptor to non-blocking
+static void fd_set_nb(int fd);
 
+// Add a connection to the vector mapping
+static void conn_put(std::vector<Conn *> &fd2conn, Conn *conn);
 
-// static void do_something(int connfd){
-//   char rbuf[64] = {};
-//   ssize_t n = read(connfd, rbuf, sizeof(rbuf) - 1);
+// Accept a new connection
+static int32_t accept_new_conn(std::vector<Conn *> &fd2conn, int fd);
 
-//   if(n < 0){
-//     msg("read() error");
-//     return;
-//   }
+// Process a single request from a connection
+static int32_t one_request(int connfd);
 
-//   printf("client says: %s\n", rbuf);
+// Handle the IO for a given connection state
+static void connection_io(Conn *conn);
 
-//   char wbuf[] = "world";
-//   write(connfd, &wbuf, sizeof(wbuf));
-// }
+// State handlers for request and response phases
+static void state_req(Conn *conn);
+static void state_res(Conn *conn);
+
+// Try to fill the buffer with incoming data
+static bool try_fill_buffer(Conn *conn);
+
+// Try to flush the buffer with outgoing data
+static bool try_flush_buffer(Conn *conn);
+
+// Try to process one request from the buffer
+static bool try_one_request(Conn *conn);
 
 static int32_t one_request(int connfd){
-
   //4 bytes header
   char rbuf[4 + k_max_msg + 1];
   errno = 0;
@@ -138,20 +148,47 @@ static int32_t accept_new_conn(std::vector <Conn *> &fd2conn, int fd){
   return 0;
 }
 
-static void connection_io(Conn *conn){
-  if (conn->state == STATE_REQ){
-    state_req(conn);
+static bool try_one_request(Conn *conn){
+  // try to parse a request from buffer
+  if (conn->rbuf_size < 4){
+    // not enough data
+    return false;
   }
-  else if (conn->state == STATE_RES){
-    state_res(conn);
+  uint32_t len = 0;
+  memcpy(&len, &conn->rbuf, 4); // rbuf has pointer to first element
+  if(len > k_max_msg){
+    msg("too long");
+    conn->state = STATE_END;
+    return false;
   }
-  else{
-    assert(0); // not expected
+  if(4 + len > conn->rbuf_size){
+    // not enough data in buffer, will retry next iteration
+    return false;
   }
-}
 
-static void state_req(Conn *conn){
-  while(try_fill_buffer(conn)){}
+  // got one request, do something with it
+  printf("client says: %.*s\n", len, &conn->rbuf[4]);
+
+  // generate echoing response
+  memcpy(&conn->wbuf, &len, 4);
+  memcpy(&conn->wbuf[4], &conn->rbuf[4], len);
+  conn->wbuf_size = 4 + len;
+
+  // remove the request from the buffer
+  // note: frequent memmove is inefficient
+  // note: need better handling for production code
+  size_t remain = conn->rbuf_size - 4 - len;
+  if(remain){
+    memmove(conn->rbuf, &conn->rbuf[4 + len], remain);
+  }
+  conn->rbuf_size = remain;
+
+  // change state
+  conn->state = STATE_RES;
+  state_res(conn);
+
+  // continue outer loop if the request was fully processed
+  return true;
 }
 
 static bool try_fill_buffer(Conn *conn){
@@ -197,6 +234,65 @@ static bool try_fill_buffer(Conn *conn){
   return (conn->state == STATE_REQ);
 }
 
+
+static void state_req(Conn *conn){
+  while(try_fill_buffer(conn)){}
+}
+
+static void state_res(Conn *conn){
+  while(try_flush_buffer(conn)){}
+}
+
+static void connection_io(Conn *conn){
+  if (conn->state == STATE_REQ){
+    state_req(conn);
+  }
+  else if (conn->state == STATE_RES){
+    state_res(conn);
+  }
+  else{
+    assert(0); // not expected
+  }
+}
+
+
+
+
+
+
+
+static bool try_flush_buffer(Conn *conn){
+  ssize_t rv = 0;
+  do {
+    size_t remain = conn->wbuf_size - conn->wbuf_sent;
+    rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+  } while(rv < 0 && errno == EINTR);
+
+  if(rv < 0 && errno == EAGAIN){
+    // got EAGAIN, stop
+    return false;
+  }
+
+  if(rv < 0){
+    msg("write() error");
+    conn->state = STATE_END;
+  }
+
+  conn->wbuf_sent += (size_t) rv;
+  assert(conn->wbuf_sent <= conn->wbuf_size);
+  if(conn->wbuf_sent == conn->wbuf_size){
+    // respons was fully sent, change state back
+    conn->state = STATE_REQ;
+    conn->wbuf_size = 0;
+    conn->wbuf_sent = 0;
+    return false;
+  }
+
+  // still has some data in wbuf, could try to write again
+  return true;
+}
+
+
 int main(){
        
     int fd;
@@ -228,6 +324,7 @@ int main(){
 
     // set the listen fd to nonblocking mode
     fd_set_nb(fd);
+
     
     // event loop
     std::vector<struct pollfd> poll_args;

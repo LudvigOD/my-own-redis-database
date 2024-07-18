@@ -1,5 +1,9 @@
+
+#pragma once
 #include <sys/types.h>
-#include "global_func.cpp"
+#include "global_func.h"
+
+
 
 enum {
   STATE_REQ = 0,
