@@ -15,7 +15,9 @@
 * read_full(int fd, char *buf, size_t n): Reads n bytes from res req and stores it in a buffer. Apperently if a peer/client disconnect EOF occurs, by using a while loop connection can restore. Finally we move cursor up in buffer to read remaining data.
 *write_all(int fd, char *buf, size_t n): Does pretty much the same as read but sends information instead.
 ### tcp_server.cpp
-* Protocol: |length1| |data1| |length2| |data2| |length3| |data3| ...
+* Protocol: |nr of str| |length1| |str1| |length2| |str2| |length3| |str3| ...
+* * The command in this design is a list of strings i.e set key val
+* Respons protocol: |res| |data|  // res is a status code and data is the respons string 
  
 * fd_set_nb(int fd): incorperate non-blocking flag to existing flags.
 
@@ -34,3 +36,8 @@
 * state_res(Conn *conn): Just a while loop calliing try_flush_buffer. Write responds to client.
 
 * connection_io(Conn *conn): Decides whether to call state_req, state_res or exit program, depening on connection's STATE.
+
+* parse_req(const uint8_t *data, size_t len, std::vector<std::string> &out): For loops over the amount of strings in req and stores every string in the data in the out variable's address. There is a "pos" variable in the for loop to keep track of what has been read. Finally, if len > pos there is trailing garbage and function return -1 error.
+
+* do_request(const uint8_t *req, uint32_t reqlen, uint32_t *rescode, uint8_t *res, uint32_t *reslen):
+This function uses the parse_req() to parse the req and creates a vector consisting of strings which is names cmd. We check what the first string is in cmd and decide which response command is to be made (get, set, del) and uses respctive function for that cmd which decides the rescode.  If the cmd is unkown, throw error. 
