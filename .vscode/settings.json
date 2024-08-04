@@ -44,6 +44,12 @@
     "tuple": "cpp",
     "typeinfo": "cpp",
     "variant": "cpp",
-    "vector": "cpp"
+    "vector": "cpp",
+    "__hash_table": "cpp",
+    "__node_handle": "cpp",
+    "__tree": "cpp",
+    "map": "cpp",
+    "optional": "cpp",
+    "unordered_map": "cpp"
   }
 }

@@ -15,6 +15,15 @@
 #include "Conn.h"
 #include "global_func.h"
 #include "res_commands.h"
+#include "hashtab.h"
+
+enum {
+  SER_NIL = 0, // null
+  SER_ERR = 1, // error
+  SER_STR = 2, // string
+  SER_INT = 3, // integer
+  SER_ARR = 4, // array
+};
 
 // Set descriptor to non-blocking
 static void fd_set_nb(int fd);
@@ -315,6 +324,7 @@ static bool try_flush_buffer(Conn *conn){
   // still has some data in wbuf, could try to write again
   return true;
 }
+
 
 
 int main(){
