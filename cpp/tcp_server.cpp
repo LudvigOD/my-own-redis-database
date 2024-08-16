@@ -17,12 +17,11 @@
 #include "res_commands.h"
 #include "hashtab.h"
 
+
+
 enum {
-  SER_NIL = 0, // null
-  SER_ERR = 1, // error
-  SER_STR = 2, // string
-  SER_INT = 3, // integer
-  SER_ARR = 4, // array
+  ERR_UNKNOWN = 1,
+  ERR_2BIG = 2,
 };
 
 // Set descriptor to non-blocking
@@ -50,11 +49,14 @@ static bool try_flush_buffer(Conn *conn);
 // Try to process one request from the buffer
 static bool try_one_request(Conn *conn);
 
-static int32_t do_request(const uint8_t *req, uint32_t reqlen, uint32_t *rescode, uint8_t *res, uint32_t *reslen);
+static int32_t do_request(std::vector<std::string> &cmd,std::string &out);
 
 static int32_t parse_req(const uint8_t *data, size_t len, std::vector<std::string> &out);
 
-static bool cmd_is(std::string &cmd, const char* comp);
+static bool cmd_is(const std::string &word, const char *cmd);
+
+
+const size_t k_max_args = 1024;
 
 // set descriptor to non-blocking
 static void fd_set_nb(int fd){
@@ -74,8 +76,8 @@ static void fd_set_nb(int fd){
 
 }
 
-static bool cmd_is(std::string &cmd, const char* comp){
-  return (std::strcmp(cmd.c_str(), comp) == 0);
+static bool cmd_is(const std::string &word, const char *cmd) {
+    return 0 == strcasecmp(word.c_str(), cmd);
 }
 
 static void conn_put(std::vector<Conn *> &fd2conn, struct Conn *conn){
@@ -118,28 +120,28 @@ static int32_t accept_new_conn(std::vector <Conn *> &fd2conn, int fd){
   return 0;
 }
 
-static int32_t do_request(
-    const uint8_t *req, uint32_t reqlen,
-    uint32_t *rescode, uint8_t *res, uint32_t *reslen)
-{
-    std::vector<std::string> cmd;
-    if (0 != parse_req(req, reqlen, cmd)) {
-        msg("bad req");
-        return -1;
+static int32_t do_request(std::vector<std::string> &cmd, std::string &out){
+    printf("\n doing request \n");
+    for(size_t i = 0; i < cmd.size(); i++){
+      printf("cmd %d: %s\n", i, cmd[i].c_str());
     }
+    printf("cmd size: %d \n", cmd.size());
+    printf("cmd: %.*s \n", 3, cmd[0].c_str());
+
     if (cmd.size() == 2 && cmd_is(cmd[0], "get")) {
-        *rescode = do_get(cmd, res, reslen);
+        printf("do_get");
+        do_get(cmd, out);
     } else if (cmd.size() == 3 && cmd_is(cmd[0], "set")) {
-        *rescode = do_set(cmd, res, reslen);
+        printf("do_set");
+        do_set(cmd, out);
     } else if (cmd.size() == 2 && cmd_is(cmd[0], "del")) {
-        *rescode = do_del(cmd, res, reslen);
+        printf("do_del");
+        do_del(cmd, out);
+    } else if (cmd.size() == 1 && cmd_is(cmd[0], "keys")){
+        printf("do_keys");
+        do_keys(cmd, out); //TODO
     } else {
-        // cmd is not recognized
-        *rescode = RES_ERR;
-        const char *msg = "Unknown cmd";
-        strcpy((char *)res, msg);
-        *reslen = strlen(msg);
-        return 0;
+        out_err(out, ERR_UNKNOWN, "Unknown command");
     }
     return 0;
 }
@@ -147,34 +149,33 @@ static int32_t do_request(
 static int32_t parse_req(
     const uint8_t *data, size_t len, std::vector<std::string> &out)
 {
-  if (len < 4) {
-      return -1;
-  }
-  int8_t k_max_args = 3;
-  uint32_t n = 0;
-  memcpy(&n, &data[0], 4);
-  if (n > k_max_args) {
-      return -1;
-  }
+    if (len < 4) {
+        return -1;
+    }
+    uint32_t n = 0;
+    memcpy(&n, &data[0], 4);
+    if (n > k_max_args) {
+        return -1;
+    }
 
-  size_t pos = 4;
-  while (n--) {
-      if (pos + 4 > len) {
-          return -1;
-      }
-      uint32_t sz = 0;
-      memcpy(&sz, &data[pos], 4);
-      if (pos + 4 + sz > len) {
-          return -1;
-      }
-      out.push_back(std::string((char *)&data[pos + 4], sz));
-      pos += 4 + sz;
-  }
+    size_t pos = 4;
+    while (n--) {
+        if (pos + 4 > len) {
+            return -1;
+        }
+        uint32_t sz = 0;
+        memcpy(&sz, &data[pos], 4);
+        if (pos + 4 + sz > len) {
+            return -1;
+        }
+        out.push_back(std::string((char *)&data[pos + 4], sz));
+        pos += 4 + sz;
+    }
 
-  if (pos != len) {
-      return -1;  // trailing garbage
-  }
-  return 0;
+    if (pos != len) {
+        return -1;  // trailing garbage
+    }
+    return 0;
 }
 
 
@@ -183,6 +184,7 @@ static bool try_one_request(Conn *conn) {
     // try to parse a request from the buffer
     if (conn->rbuf_size < 4) {
         // not enough data in the buffer. Will retry in the next iteration
+        printf("rbuf size: %d\n", conn->rbuf_size);
         return false;
     }
     uint32_t len = 0;
@@ -194,23 +196,30 @@ static bool try_one_request(Conn *conn) {
     }
     if (4 + len > conn->rbuf_size) {
         // not enough data in the buffer. Will retry in the next iteration
+        printf("rbuf size: %d, is smaller than %d\n ", conn->rbuf_size, 4 + len);
+        return false;
+    }
+
+    // parse the request
+    std::vector<std::string> cmd;
+    if (0 != parse_req(&conn->rbuf[4], len, cmd)) {
+        msg("bad req");
+        conn->state = STATE_END;
         return false;
     }
 
     // got one request, generate the response.
-    uint32_t rescode = 0;
-    uint32_t wlen = 0;
-    int32_t err = do_request(
-        &conn->rbuf[4], len,
-        &rescode, &conn->wbuf[4 + 4], &wlen
-    );
-    if (err) {
-        conn->state = STATE_END;
-        return false;
+    std::string out;
+    do_request(cmd, out);
+
+    // pack the response into the buffer
+    if (4 + out.size() > k_max_msg) {
+        out.clear();
+        out_err(out, ERR_2BIG, "response is too big");
     }
-    wlen += 4;
+    uint32_t wlen = (uint32_t)out.size();
     memcpy(&conn->wbuf[0], &wlen, 4);
-    memcpy(&conn->wbuf[4], &rescode, 4);
+    memcpy(&conn->wbuf[4], out.data(), out.size());
     conn->wbuf_size = 4 + wlen;
 
     // remove the request from the buffer.
@@ -230,99 +239,92 @@ static bool try_one_request(Conn *conn) {
     return (conn->state == STATE_REQ);
 }
 
-static bool try_fill_buffer(Conn *conn){
-  // try to fill the buffer
-  assert(conn->rbuf_size < sizeof(conn->rbuf));
-  ssize_t rv = 0;
-  do {
-    size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
-    // start to read cap amounts of bytes to rbuf
-    // starting at rbuf_size
-    rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap); 
-    
-  } while (rv < 0 && errno == EINTR); // if it is interupted it reads again 
-                                      // from the latest popsition
-
-  if(rv < 0 && errno == EAGAIN){
-    // got eagain, stop
-    return false;
-  }
-  if(rv < 0){
-    msg("read() error");
-    conn->state = STATE_END;
-    return false;
-  }
-  if(rv == 0){
-    if(conn->rbuf_size > 0){
-      msg("unexpected EOF");
+static bool try_fill_buffer(Conn *conn) {
+    // try to fill the buffer
+    assert(conn->rbuf_size < sizeof(conn->rbuf));
+    ssize_t rv = 0;
+    do {
+        size_t cap = sizeof(conn->rbuf) - conn->rbuf_size;
+        rv = read(conn->fd, &conn->rbuf[conn->rbuf_size], cap);
+        printf("rv in fill buffer loop: %d \n", rv);
+    } while (rv < 0 && errno == EINTR);
+    if (rv < 0 && errno == EAGAIN) {
+        // got EAGAIN, stop.
+        return false;
     }
-    else{
-      // if rbuf_size is 0 then no bytes were read and therefore its finsished
-      msg("EOF");
+    if (rv < 0) {
+        msg("read() error");
+        conn->state = STATE_END;
+        return false;
     }
-    conn->state = STATE_END;
-    return false;
-  }
+    if (rv == 0) {
+        if (conn->rbuf_size > 0) {
+            msg("unexpected EOF");
+        } else {
+            msg("EOF");
+        }
+        conn->state = STATE_END;
+        return false;
+    }
 
-  conn->rbuf_size += (size_t)rv;
-  assert(conn->rbuf_size <= sizeof(conn->rbuf)); // else message to long
-  
-  // try to request one by one
-  // Why is there a loop? Read explanation of pipelining...
-  while(try_one_request(conn)){}
-  return (conn->state == STATE_REQ);
+    conn->rbuf_size += (size_t)rv;
+    assert(conn->rbuf_size <= sizeof(conn->rbuf));
+
+    // Try to process requests one by one.
+    printf("trying one request, rv: %zd \n", rv);
+    while (try_one_request(conn)) {}
+    return (conn->state == STATE_REQ);
 }
 
-
 static void state_req(Conn *conn){
-  while(try_fill_buffer(conn)){}
+    while(try_fill_buffer(conn)){}
 }
 
 static void state_res(Conn *conn){
-  while(try_flush_buffer(conn)){}
+    while(try_flush_buffer(conn)){}
 }
 
 static void connection_io(Conn *conn){
-  if (conn->state == STATE_REQ){
-    state_req(conn);
-  }
-  else if (conn->state == STATE_RES){
-    state_res(conn);
-  }
-  else{
-    assert(0); // not expected
-  }
+    if (conn->state == STATE_REQ){
+        state_req(conn);
+    }
+    else if (conn->state == STATE_RES){
+        state_res(conn);
+    }
+    else{
+        assert(0); // not expected
+    }
 }
 
 static bool try_flush_buffer(Conn *conn){
-  ssize_t rv = 0;
-  do {
-    size_t remain = conn->wbuf_size - conn->wbuf_sent;
-    rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
-  } while(rv < 0 && errno == EINTR);
+    ssize_t rv = 0;
+    do {
+        size_t remain = conn->wbuf_size - conn->wbuf_sent;
+        rv = write(conn->fd, &conn->wbuf[conn->wbuf_sent], remain);
+    } while(rv < 0 && errno == EINTR);
 
-  if(rv < 0 && errno == EAGAIN){
-    // got EAGAIN, stop
-    return false;
-  }
+    if(rv < 0 && errno == EAGAIN){
+        // got EAGAIN, stop
+        return false;
+    }
 
-  if(rv < 0){
-    msg("write() error");
-    conn->state = STATE_END;
-  }
+    if(rv < 0){
+        msg("write() error");
+        conn->state = STATE_END;
+    }
 
-  conn->wbuf_sent += (size_t) rv;
-  assert(conn->wbuf_sent <= conn->wbuf_size);
-  if(conn->wbuf_sent == conn->wbuf_size){
-    // respons was fully sent, change state back
-    conn->state = STATE_REQ;
-    conn->wbuf_size = 0;
-    conn->wbuf_sent = 0;
-    return false;
-  }
+    conn->wbuf_sent += (size_t) rv;
+    assert(conn->wbuf_sent <= conn->wbuf_size);
+    if(conn->wbuf_sent == conn->wbuf_size){
+        // respons was fully sent, change state back
+        conn->state = STATE_REQ;
+        conn->wbuf_size = 0;
+        conn->wbuf_sent = 0;
+        return false;
+    }
 
-  // still has some data in wbuf, could try to write again
-  return true;
+    // still has some data in wbuf, could try to write again
+    return true;
 }
 
 

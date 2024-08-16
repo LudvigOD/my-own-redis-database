@@ -1,5 +1,5 @@
-#ifndef HASHTAB.H
-#define HASHTAB.H
+#ifndef HASHTAB_H 
+#define HASHTAB_H 
 
 #include <sys/types.h>
 #include <stdlib.h>
@@ -11,17 +11,6 @@
 const size_t k_max_load_factor = 8;
 const size_t k_resizing_work = 128;
 
-void hm_insert(HMap *hmap, HNode *node);
-HNode *hm_lookup(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *));
-static void hm_start_resizing(HMap *hmap);
-static void hm_help_resizing(HMap *hmap);
-
-// hashtable interface
-typedef struct HMap {
-  HTab ht1;  // Newer
-  HTab ht2;  // Older
-  size_t resizing_pos = 0;
-} HMap;
 
 typedef struct HNode {
   HNode *next = NULL;
@@ -34,6 +23,12 @@ typedef struct HTab {
   size_t size = 0;
 } HTab;
 
+typedef struct HMap {
+  HTab ht1;  // Newer
+  HTab ht2;  // Older
+  size_t resizing_pos = 0;
+} HMap;
+
 typedef struct Entry {
   HNode node;
   std::string key;
@@ -44,6 +39,10 @@ struct {
   HMap db;
 } g_data;
 
+void hm_insert(HMap *hmap, HNode *node);
+HNode *hm_lookup(HMap *hmap, HNode *key, bool (*eq)(HNode *, HNode *));
+static void hm_start_resizing(HMap *hmap);
+static void hm_help_resizing(HMap *hmap);
 
 static void h_init(HTab *htab, size_t n){
   assert(n > 0 && ((n & n-1) == 0)); // must be able to factorize to only twos
@@ -52,26 +51,27 @@ static void h_init(HTab *htab, size_t n){
   htab->size = 0;
 }
 
-static void h_insert(HTab *htab, HNode *node){
-  size_t pos = node->hcode & htab->mask; // get position
-  HNode *next  = htab->tab[pos];  // prepending node if pos is not null
-  node->next = next;  // setting node to first pos in list
-  htab->tab[pos] = node;  // setting node to pos in array
-  htab->size++; // incrementing size
+static void h_insert(HTab *htab, HNode *node) {
+    size_t pos = node->hcode & htab->mask;
+    HNode *next = htab->tab[pos];
+    node->next = next;
+    htab->tab[pos] = node;
+    htab->size++;
 }
 
-static HNode **h_lookup(HTab *htab, HNode *key, bool (*eq)(HNode *, HNode *)){
-  if(!htab->tab){
-    return NULL;
-  }
-  size_t pos = key->hcode;
-  HNode **from = &htab->tab[pos]; // incoming pointer to the result
-  for(HNode* cur; (cur = *from) != NULL; from = &cur->next){  // now from holds the address to the next node
-    if(cur->hcode == key->hcode && eq(cur, key)){
-      return from;
+static HNode **h_lookup(HTab *htab, HNode *key, bool (*eq)(HNode *, HNode *)) {
+    if (!htab->tab) {
+        return NULL;
     }
-  }
-  return NULL;
+
+    size_t pos = key->hcode & htab->mask;
+    HNode **from = &htab->tab[pos];     // incoming pointer to the result
+    for (HNode *cur; (cur = *from) != NULL; from = &cur->next) {
+        if (cur->hcode == key->hcode && eq(cur, key)) {
+            return from;
+        }
+    }
+    return NULL;
 }
 
 static HNode *h_detach(HTab *htab, HNode **from){
@@ -121,7 +121,7 @@ static void hm_help_resizing(HMap *hmap){
   }
   if(hmap->ht2.size == 0 && hmap->ht2.tab){
     // done
-    free(hmap->ht2.tab);
+    delete(hmap->ht2.tab);
     hmap->ht2 = HTab{};
   }
 }
@@ -157,8 +157,8 @@ size_t hm_size(HMap *hmap){
 }
 
 void hm_destroy(HMap *hmap){
-  free(&hmap->ht1);
-  free(&hmap->ht2);
+  delete(&hmap->ht1);
+  delete(&hmap->ht2);
   *hmap = HMap{}; // sets defualt values
 }
 

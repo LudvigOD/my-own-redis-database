@@ -50,6 +50,8 @@
     "__tree": "cpp",
     "map": "cpp",
     "optional": "cpp",
-    "unordered_map": "cpp"
+    "unordered_map": "cpp",
+    "type_traits": "cpp",
+    "set": "cpp"
   }
 }
