@@ -121,13 +121,8 @@ static int32_t accept_new_conn(std::vector <Conn *> &fd2conn, int fd){
 }
 
 static int32_t do_request(std::vector<std::string> &cmd, std::string &out){
-    printf("\n doing request \n");
-    for(size_t i = 0; i < cmd.size(); i++){
-      printf("cmd %d: %s\n", i, cmd[i].c_str());
-    }
-    printf("cmd size: %d \n", cmd.size());
-    printf("cmd: %.*s \n", 3, cmd[0].c_str());
 
+    // math operation 
     if (cmd.size() == 2 && cmd_is(cmd[0], "get")) {
         printf("do_get");
         do_get(cmd, out);
@@ -149,27 +144,28 @@ static int32_t do_request(std::vector<std::string> &cmd, std::string &out){
 static int32_t parse_req(
     const uint8_t *data, size_t len, std::vector<std::string> &out)
 {
-    if (len < 4) {
+    if (len < 4) { // need 4 bytes to read arg count (first four bytes)
         return -1;
     }
     uint32_t n = 0;
-    memcpy(&n, &data[0], 4);
-    if (n > k_max_args) {
+    memcpy(&n, &data[0], 4); // copy the value of the first four bytes which is the nr of args
+    if (n > k_max_args) { // rejects if to big
         return -1;
     }
 
-    size_t pos = 4;
+    size_t pos = 4; // start after length arg 
+    // trhough every arg
     while (n--) {
-        if (pos + 4 > len) {
+        if (pos + 4 > len) { // check if index inside data
             return -1;
         }
-        uint32_t sz = 0;
-        memcpy(&sz, &data[pos], 4);
-        if (pos + 4 + sz > len) {
+        uint32_t sz = 0; // length of argument's data in bytes
+        memcpy(&sz, &data[pos], 4); 
+        if (pos + 4 + sz > len) { // check if index inside data
             return -1;
         }
-        out.push_back(std::string((char *)&data[pos + 4], sz));
-        pos += 4 + sz;
+        out.push_back(std::string((char *)&data[pos + 4], sz)); // conovert the data to string
+        pos += 4 + sz; // update pos for next length/data chunk
     }
 
     if (pos != len) {
@@ -188,7 +184,7 @@ static bool try_one_request(Conn *conn) {
         return false;
     }
     uint32_t len = 0;
-    memcpy(&len, &conn->rbuf[0], 4);
+    memcpy(&len, &conn->rbuf[0], 4); // get the length of read buffer
     if (len > k_max_msg) {
         msg("too long");
         conn->state = STATE_END;
@@ -284,6 +280,7 @@ static void state_res(Conn *conn){
     while(try_flush_buffer(conn)){}
 }
 
+// match operation based on state
 static void connection_io(Conn *conn){
     if (conn->state == STATE_REQ){
         state_req(conn);
@@ -328,7 +325,7 @@ static bool try_flush_buffer(Conn *conn){
 }
 
 
-
+// Main loop: set up listening socket and poll for events
 int main(){
        
     int fd;
@@ -361,14 +358,18 @@ int main(){
     // set the listen fd to nonblocking mode
     fd_set_nb(fd);
 
+    /*
+    POLLIN: ready for accepting/reading
+    POLLOUT: ready for writing
+    */
+    std::vector<struct pollfd> poll_args;
     
     // event loop
-    std::vector<struct pollfd> poll_args;
     while(true){
       // prepare arguments for poll
       poll_args.clear();
       // for convenience, the listening fd is put to the first position
-      struct pollfd pfd = {fd, POLLIN, 0};
+      struct pollfd pfd = {fd, POLLIN, 0}; // ready for new connections
       poll_args.push_back(pfd);
       // connection fds
       for (Conn *conn : fd2conn){ 
@@ -377,7 +378,7 @@ int main(){
         }
         struct pollfd pfd = {};
         pfd.fd = conn->fd;
-        pfd.events = (conn->state == STATE_REQ) ? POLLIN : POLLOUT;
+        pfd.events = (conn->state == STATE_REQ) ? POLLIN : POLLOUT; // if state_req => POLLIN and server wants request
         pfd.events = pfd.events | POLLERR; // deciding what events to be monitored (POLLIN or POLLOUT and POLLERR)
         poll_args.push_back(pfd);
       }
@@ -392,21 +393,21 @@ int main(){
 
       // process active connections
       for(int i = 1; i < poll_args.size(); i++){
-        if(poll_args[i].revents){
+        if(poll_args[i].revents){ // is accepted?
           Conn *conn = fd2conn[poll_args[i].fd]; // grab unique integer from fd and use it as a key for that index
           connection_io(conn);
           if (conn->state == STATE_END) {
             // client close normally, or something bad happens
             // destroy this connection
             fd2conn[conn->fd] = NULL;
-            (void) close(conn->fd);
+            close(conn->fd);
             free(conn);
           }
         }
       }
       // try to accept a new connection if the listening fd is active (index 0 is set to POLLIN on every iteration of while loop)
       if(poll_args[0].revents){
-        (void) accept_new_conn(fd2conn, fd);
+        accept_new_conn(fd2conn, fd);
       }
 
     }
